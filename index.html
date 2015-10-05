@@ -1,0 +1,655 @@
+<!doctype html>
+<html lang="en">	
+<head>
+	<meta charset="utf-8">
+	<title>SQL plans explained with Ruby</title>
+	<link rel="stylesheet" href="css/reveal.min.css">
+	<link rel="stylesheet" href="css/theme/default.css" id="theme">	
+</head>
+
+<body>
+	<div class="reveal">
+		<div class="slides">
+      <section>
+        <h2>SQL plans explained with Ruby</h2>
+				<p> Robert Ulejczyk </p>
+			</section>
+
+      <section>
+        <section>
+          <h2>Basic structure</h2>
+          <p>Countries:</p>
+          <pre><code>
+@countries = [
+  { code: "NLD", name: "Netherlands" },
+  { code: "ALB", name: "Albania" },
+  { code: "AND", name: "Andorra" },
+  { code: "BEL", name: "Belgium" },
+  { code: "GER", name: "Germany" },                 # No match
+  { code: "BIH", name: "Bosnia and Herzegovina" }
+]
+          </code></pre>
+			  </section>
+        <section>
+          <h2>Basic structure</h2>
+          <p>Cities:</p>
+          <pre><code>
+@cities = [
+  { country_code: "ALB", name: "Tirana" },
+  { country_code: "AND", name: "Andorra la Vella" },
+  { country_code: "BEL", name: "Schaerbeek" },
+  { country_code: "BEL", name: "Brugge" },
+  { country_code: "BIH", name: "Zenica" },
+  { country_code: "BIH", name: "Banja Luka" },
+  { country_code: "BIH", name: "Sarajevo" },
+  { country_code: "NLD", name: "Alkmaar" },
+  { country_code: "NLD", name: "Ede" },
+  { country_code: "POL", name: "Krakow" }            # No match
+]
+          </code></pre>
+			  </section>
+        <section>
+          <h2>Basic structure</h2>
+          <p>Cities index on code:</p>
+          <pre><code>
+@cities_code_index = @cities.inject({}) do |memo, city|
+  memo[city[:country_code]] ||= []
+  memo[city[:country_code]] << @cities.index(city)
+  memo
+end
+          </code></pre>
+			  </section>
+        <section>
+          <h2>Basic structure</h2>
+          <p>Cities index on name:</p>
+          <pre><code>
+@cities_name_index = @cities.inject({}) do |memo, city|
+  memo[city[:name]] ||= []
+  memo[city[:name]] << @cities.index(city)
+  memo
+end
+          </code></pre>
+			  </section>
+			</section>
+
+      <section>
+        <section>
+          <h2>JOINs</h2>
+          <p>Will use only inner join as an example.</p>
+          <pre><code>
+SELECT country.code FROM country
+INNER JOIN city ON country.code = city.countrycode;
+          </code></pre>
+        </section>
+        <section>
+          <h2>JOINs</h2>
+          <p>Three methods are supported:</p>
+          <ul>
+            <li>Nested Loop</li>
+            <li>Hash Join</li>
+            <li>Merge Join</li>
+          </ul>
+        </section>
+        <section>
+          <h2>Nested loop</h2>
+          <pre><code>
+For each row r in R do
+   For each row s in S do
+      If r and s satisfy the join condition
+         Then output the row
+          </code></pre>
+        </section>
+        <section>
+          <h2>Nested loop</h2>
+          <ul>
+            <li>has no upstart cost - super efficient for few rows</li>
+            <li>can get very expensive quickly - number of iterations is product of both tables</li>
+            <li>explain analyze and pay attention to estimated vs actual rows</li>
+          </ul>
+        </section>
+        <section>
+          <h2>Nested loop</h2>
+          <pre><code>
+results = []
+i = 0
+
+@countries.each do |country|
+  @cities.each do |city|
+    i = i + 1
+    results << country if city[:country_code] == country[:code]
+  end
+end
+          </code></pre>
+          <pre><code>
+["NLD", "NLD", "ALB", "AND", "BEL", "BEL", "BIH", "BIH", "BIH"]
+          </code></pre>
+        </section>
+        <section>
+          <h2>Hash Join</h2>
+          <pre><code>
+for each row R1 in the build table
+    begin
+        calculate hash value on R1 join key(s)
+        insert R1 into the appropriate hash bucket
+    end
+for each row R2 in the probe table
+    begin
+        calculate hash value on R2 join key(s)
+        for each row R1 in the corresponding hash bucket
+            if R1 joins with R2
+                return (R1, R2)
+    end
+          </code></pre>
+        </section>
+        <section>
+          <h2>Hash Join</h2>
+          <ul>
+            <li>requires building a hash structure in advance (time and memory) - upstart cost</li>
+            <li>the less key columns the better</li>
+            <li>will always use smaller table to build a hash</li>
+            <li>support only equality (==) operator</li>
+          </ul>
+        </section>
+        <section>
+          <h2>Hash Join</h2>
+          <pre><code>
+results = []
+i = 0
+
+temp_hash = @cities.inject(Hash.new([])) do |memo, city|
+  memo[city[:country_code]] = memo[city[:country_code]] + [city]
+  memo
+end
+
+@countries.each do |country|
+  temp_hash[country[:code]].each do
+    i = i + 1
+    results << country
+  end
+end
+          </code></pre>
+          <pre><code>
+["NLD", "NLD", "ALB", "AND", "BEL", "BEL", "BIH", "BIH", "BIH"]
+          </code></pre>
+        </section>
+        <section>
+          <h2>Merge Join</h2>
+          <pre><code>
+get first row R1 from input 1
+get first row R2 from input 2
+
+while not at the end of either input
+    begin
+        if R1 joins with R2
+            begin
+                return (R1, R2)
+                get next row R2 from input 2
+            end
+        else if R1 < R2
+            get next row R1 from input 1
+        else
+            get next row R2 from input 2
+    end
+          </code></pre>
+        </section>
+        <section>
+          <h2>Merge Join</h2>
+          <ul>
+            <li>at most sum of rows in both tables is read</li>
+            <li>input tables have to be sorted - can use indexes</li>
+            <li>does no support inquality (!=) operator</li>
+          </ul>
+        </section>
+        <section>
+          <h2>Merge Join</h2>
+          <pre><code>
+results = []
+i = 0
+
+sorted_countries = @countries.sort_by {|country| country[:code]}
+sorted_cities    = @cities.sort_by {|city| city[:country_code]}
+
+x, y = 0, 0
+
+loop do
+  i = i + 1
+  country = sorted_countries[x]
+  city    = sorted_cities[y]
+
+  if country[:code] == city[:country_code]
+    results << country
+    y = y + 1
+  elsif country[:code] < city[:country_code]
+    x = x + 1
+  elsif country[:code] > city[:country_code]
+    y = y + 1
+  end
+
+  break if (sorted_countries[x].nil? || sorted_cities[y].nil?)
+end
+          </code></pre>
+          <pre><code>
+["ALB", "AND", "BEL", "BEL", "BIH", "BIH", "BIH", "NLD", "NLD"]
+          </code></pre>
+        </section>
+        <section>
+          <h2>Hints (cheats)</h2>
+          <p>Postgres does not provide syntax for giving hints to Query Planner/Optimizer.</p>
+          <p>But some sort of control is still possible.</p>
+        </section>
+        <section>
+          <h2>Hints - prevent using an index</h2>
+          <p>There are no statistics available for expressions so Postgres assumes default estimations.</p>
+          <pre><code>
+world=# explain analyze select * from city where countrycode = 'POL';
+                                                          QUERY PLAN                                                           
+-----------------------------------------------------------------------------------
+ Index Scan using idx_city_countrycode on city  (cost=0.28..22.87 rows=44 width=31)
+                                         (actual time=0.031..0.044 rows=44 loops=1)
+
+   Index Cond: (countrycode = 'POL'::bpchar)
+ Total runtime: 0.075 ms
+(3 rows)
+          </code></pre>
+          <pre><code>
+world=# explain analyze select * from city where countrycode = concat('POL');
+                                                           QUERY PLAN                                                           
+-----------------------------------------------------------------------------------
+ Seq Scan on city  (cost=0.00..135.38 rows=20 width=31)
+            (actual time=6.926..9.500 rows=44 loops=1)
+
+   Filter: ((countrycode)::text = concat('POL'))
+   Rows Removed by Filter: 4035
+ Total runtime: 9.546 ms
+(4 rows)
+          </code></pre>
+        </section>
+        <section>
+          <h2>Hints - suggest number of rows</h2>
+          <p>We know there is only one row matching the condition so we give a hint to fetch only one row.</p> 
+          <pre><code>
+world=# explain analyze select * from city where countrycode = concat('POL');
+-----------------------------------------------------------------------------
+ Seq Scan on city  (cost=0.00..135.38 rows=20 width=31)
+             (actual time=7.154..8.968 rows=44 loops=1)
+
+   Filter: ((countrycode)::text = concat('POL'))
+   Rows Removed by Filter: 4035
+ Total runtime: 9.011 ms
+          </code></pre>
+          <pre><code>
+world=# explain analyze select * from city where countrycode = concat('POL') limit 1;
+-------------------------------------------------------------------------------------
+ Limit  (cost=0.00..6.77 rows=1 width=31) (actual time=7.254..7.255 rows=1 loops=1)
+   ->  Seq Scan on city  (cost=0.00..135.38 rows=20 width=31)
+                    (actual time=7.252..7.252 rows=1 loops=1)
+         Filter: ((countrycode)::text = concat('POL'))
+         Rows Removed by Filter: 2994
+ Total runtime: 7.297 ms
+          </code></pre>
+        </section>
+        <section>
+          <h2>Hints - all your base</h2>
+          <p>You can use CTE, Query Planner won't inline WITH queries.</p>
+          <br/>
+          <p>It's a feature, not a bug.</p>
+          <br/>
+          <p>Details:</p>
+          <p>http://blog.2ndquadrant.com/postgresql-ctes-are-optimization-fences/</p>
+        </section>
+      </section>
+      <section>
+        <section>
+          <h2>SCAN METHODS</h2>
+          <pre><code>
+SELECT * FROM city WHERE country_code = 'BEL';
+          </code></pre>
+        </section>
+        <section>
+          <h2>Sequential scan</h2>
+          <p>Reads the data directly from the disk page by page</p>
+          <ul>
+            <li>single page contains multiple records</li>
+            <li>pages are read sequentially - fastest possible way</li>
+            <li>no logical ordering of the data</li>
+            <li>optimal for reading large parts of a table</li>
+            <li>always works</li>
+          </ul>
+        </section>
+        <section>
+          <h2>Sequential scan</h2>
+          <pre><code>
+results = []
+i = 0
+
+@cities.each do |city|
+  i = i + 1
+
+  results << city if city[:country_code] == 'BEL'
+end
+          </code></pre>
+        </section>
+        <section>
+          <h2>Index scan</h2>
+          <p>Reads the index directly from the disk sequentially, then reads individual records from the heap using random access</p>
+          <ul>
+            <li>index is read sequentially - fastest possible way</li>
+            <li>data pages (heap) are read in random order (as per index) - slowest possible way</li>
+            <li>heap page is read immediately</li>
+            <li>guarantees order and can be read backward (at no extra cost)</li>
+            <li>can read the same heap page multiple times</li>
+            <li>optimal for reading small parts of a table</li>
+          </ul>
+        </section>
+        <section>
+          <h2>Index scan</h2>
+          <pre><code>
+results = []
+i = 0
+
+@cities_code_index['BEL'].each do |row_position|
+  i = i + 1
+
+  results << @cities[row_position]
+end
+          </code></pre>
+        </section>
+        <section>
+          <h2>Bitmap Index scan</h2>
+          <p>Reads whole index, builds a bitmap, sorts it and then reads the heap</p>
+          <ul>
+            <li>requires to load whole index to memory</li>
+            <li>optimize heap reads by sorting the bitmap - ensure a page is read at most one time</li>
+            <li>heap is read using random order</li>
+            <li>most of the time requires additional step - index heap scan to filter proper rows</li>
+            <li>optimal for readins small (but larger than Index scan) parts of the table</li>
+            <li>allows using multiple indexes</li>
+            <li>results are unordered</li>
+            <li>inefficient when ordering is necessary</li>
+          </ul>
+        </section>
+        <section>
+          <h2>Bitmap Index scan</h2>
+          <pre><code>
+SELECT * FROM city
+WHERE country_code = 'BEL' OR name = 'Tirana' OR name = 'Brugge';
+          </code></pre>
+          <pre><code>
+name_bitmap_tirana = @cities_name_index['Tirana']
+name_bitmap_brugge = @cities_name_index['Brugge']
+code_bitmap_bel    = @cities_code_index['BEL']
+
+merged_bitmap = name_bitmap_tirana | name_bitmap_brugge | code_bitmap_bel
+sorted_bitmap = merged_bitmap.sort
+
+sorted_bitmap.each do |row_position|
+  i = i + 1
+  results << @cities[row_position]
+end
+          </code></pre>
+        </section>
+        <section>
+          <h2>Is it all true?</h2>
+          <pre><code>
+EXPLAIN SELECT * FROM countrylanguage WHERE language = '--language--';
+          </code></pre>
+          <p>But first create an index</p>
+          <pre><code>
+CREATE INDEX idx_countrylanguage_language ON
+             countrylanguage (language text_pattern_ops);
+ANALYZE;
+          </code></pre>
+        </section>
+        <section>
+          <h2>Is it all true?</h2>
+          <pre><code>
+        language | real_count | plan_count | totalcost |       type       
+-----------------+------------+------------+-----------+------------------
+English          |         60 |         60 |     11.49 | Bitmap Heap Scan
+Arabic           |         33 |         33 |     10.94 | Bitmap Heap Scan
+Spanish          |         28 |         28 |     10.84 | Bitmap Heap Scan
+French           |         25 |         25 |     10.78 | Bitmap Heap Scan
+   -- snap --         -- snap --                  -- snap --
+Wolof            |          3 |          3 |      9.97 | Bitmap Heap Scan
+Shona            |          3 |          3 |      9.97 | Bitmap Heap Scan
+Gurma            |          3 |          3 |      9.97 | Bitmap Heap Scan
+Hebrew           |          2 |          1 |      8.29 | Index Scan
+Arawakan         |          2 |          1 |      8.29 | Index Scan
+Teke             |          2 |          1 |      8.29 | Index Scan
+Papuan Languages |          2 |          1 |      8.29 | Index Scan
+          </code></pre>
+        </section>
+        <section>
+          <h2>Is it all true? - queries</h2>
+          <pre><code>
+CREATE OR REPLACE FUNCTION parse_explain(IN query text, 
+-- http://stackoverflow.com/questions/7682102/putting-explain-results-into-a-table
+OUT startup numeric,
+OUT totalcost numeric, 
+OUT planrows numeric, 
+OUT planwidth numeric,
+OUT type text)
+AS
+$BODY$
+DECLARE
+    query_explain  text;
+    explanation       xml;
+    nsarray text[][];
+BEGIN
+nsarray := ARRAY[ARRAY['x', 'http://www.postgresql.org/2009/explain']];
+query_explain :=e'EXPLAIN(FORMAT XML) ' || query;
+EXECUTE query_explain INTO explanation;
+startup := (xpath('/x:explain/x:Query/x:Plan/x:Startup-Cost/text()', explanation, nsarray))[1];
+totalcost := (xpath('/x:explain/x:Query/x:Plan/x:Total-Cost/text()', explanation, nsarray))[1];
+planrows := (xpath('/x:explain/x:Query/x:Plan/x:Plan-Rows/text()', explanation, nsarray))[1];
+planwidth := (xpath('/x:explain/x:Query/x:Plan/x:Plan-Width/text()', explanation, nsarray))[1];
+type      := (xpath('/x:explain/x:Query/x:Plan/x:Node-Type/text()', explanation, nsarray))[1];
+RETURN;
+END;
+$BODY$
+LANGUAGE plpgsql;
+          </code></pre>
+        </section>
+        <section>
+          <h2>Is it all true? - queries</h2>
+          <pre><code>
+with langs as (
+  select count(*), language from countrylanguage group by 2 order by 1 desc
+),
+queries as (
+  select sub.planrows as plan_count, sub.type, sub.totalcost, langs.language, count as real_count
+  from langs
+  inner join lateral ( select totalcost, langs.language, planrows, type
+                       from parse_explain(
+                       concat(E'select * from countrylanguage where language = \'', langs.language, E'\''))
+                     ) sub
+  on langs.language = sub.language
+)
+select language, real_count, plan_count, totalcost, type from queries;
+          </code></pre>
+        </section>
+      </section>
+      <section>
+        <section>
+          <h2>AGGREGATES</h2>
+          <p>Aggregate function computes a single result from multiple rows</p>
+          <br/>
+          <ul>
+            <li>require sorted input by all columns (order doesn't matter)</li>
+            <li>WHERE filters rows before aggregates are computed</li>
+            <li>HAVING filters rows after aggregates are computed</li>
+          </ul>
+        </section>
+        <section>
+          <h2>AGGREGATES</h2>
+          <pre><code>
+clear the current aggregate results
+clear the current group by columns
+for each input row
+  begin
+    if the input row does not match the current group by columns
+      begin
+        output the aggregate results
+        clear the current aggregate results
+        set the current group by columns to the input row
+      end
+    update the aggregate results with the input row
+  end
+
+          </code></pre>
+        </section>
+        <section>
+          <h2>AGGREGATES</h2>
+          <pre><code>
+results = []
+i = 0
+
+sorted_cities     = @cities.sort_by {|city| city[:country_code]}
+current_aggregate = {}
+
+sorted_cities.each do |row|
+  i = i + 1
+
+  if (current_aggregate[:country_code] != row[:country_code])
+    results << current_aggregate unless current_aggregate[:count].nil?
+    current_aggregate = {}
+  end
+
+  current_aggregate[:country_code] = row[:country_code]
+  current_aggregate[:count]        = current_aggregate[:count].to_i + 1
+end
+
+results << current_aggregate
+          </code></pre>
+        </section>
+        <section>
+          <h2>WINDOW FUNCTIONS</h2>
+          <p>Window function performs a calculation across a set of table rows that are somehow related to the current row. Unlike regular aggregate functions, use of a window function does not cause rows to become grouped into a single output row — the rows retain their separate identities.</p>
+          <br/>
+          <p>Out of scope, sorry!</p>
+        </section>
+      </section>
+      <section>
+        <section>
+          <h2>Reading the plan</h2>
+          <ul>
+            <li>plan is evaulated from bottom to top</li>
+            <li>nesting represents dependencies</li>
+            <li>-> implies action</li>
+            <li>lack of -> implies additional information</li>
+            <li>very top line is an action too, but has no -></li>
+          </ul>
+        </section>
+        <section>
+          <h2>Reading the plan</h2>
+          <pre><code>
+world=# explain select * from city inner join country on country.code = city.countrycode;
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
+ Hash Join  (cost=10.38..173.65 rows=4180 width=143)
+   Hash Cond: (city.countrycode = country.code)
+   ->  Seq Scan on city  (cost=0.00..105.80 rows=4180 width=30)
+   ->  Hash  (cost=7.39..7.39 rows=239 width=113)
+         ->  Seq Scan on country  (cost=0.00..7.39 rows=239 width=113)
+          </code></pre>
+          <ul>
+            <li>scan whole country table</li>
+            <li>build a hash of country table</li>
+            <li>scan city table</li>
+            <li>use hash join to find correct rows</li>
+          </ul>
+        </section>
+        <section>
+          <pre><code>
+world=# explain (costs false) select * from city ci inner join country co
+on co.code = ci.countrycode inner join countrylanguage l on co.code = l.countrycode;
+
+                     QUERY PLAN                     
+----------------------------------------------------
+ Hash Join
+   Hash Cond: (ci.countrycode = co.code)
+   ->  Seq Scan on city ci
+   ->  Hash
+         ->  Hash Join
+               Hash Cond: (l.countrycode = co.code)
+               ->  Seq Scan on countrylanguage l
+               ->  Hash
+                     ->  Seq Scan on country co
+          </code></pre>
+          <ul>
+            <li>scan country table</li>
+            <li>build a hash of country table</li>
+            <li>scan countrylanguate table</li>
+            <li>use hash join to find correct rows</li>
+            <li>build a has of rows from previous join</li>
+            <li>scan city table</li>
+            <li>use hash join to find correct rows</li>
+          </ul>
+        </section>
+        <section>
+          <p>Format in YAML if text is not readable.</p>
+          <pre><code>
+world=# explain (format yaml, costs false) select * from city
+        inner join country on country.code = city.countrycode;
+                     QUERY PLAN                     
+----------------------------------------------------
+ - Plan:                                           
+     Node Type: "Hash Join"                        
+     Join Type: "Inner"                            
+     Hash Cond: "(city.countrycode = country.code)"
+     Plans:                                        
+       - Node Type: "Seq Scan"                     
+         Parent Relationship: "Outer"              
+         Relation Name: "city"                     
+         Alias: "city"                             
+       - Node Type: "Hash"                         
+         Parent Relationship: "Inner"              
+         Plans:                                    
+           - Node Type: "Seq Scan"                 
+             Parent Relationship: "Outer"          
+             Relation Name: "country"              
+             Alias: "country"
+          </code></pre>
+        </section>
+        <section>
+          <p>What if I have no join but Postgres plan shows join?</p>
+          <pre><code>
+world=# explain (costs false) select * from city, country
+        where city.countrycode = country.code;
+
+------------------------------------------------
+ Hash Join
+   Hash Cond: (city.countrycode = country.code)
+   ->  Seq Scan on city
+   ->  Hash
+         ->  Seq Scan on country
+(5 rows)
+          </code></pre>
+          <p>Technically this is a join.</p>
+          <br/>
+          <p>Postgres knows better.</p>
+          <br/>
+          <p>Accept it and move on.</p>
+        </section>
+      </section>
+      <section>
+        <h2>Thank you</h2>
+      </section>
+			</div>
+	</div>
+	<script src="lib/js/head.min.js"></script>
+	<script src="js/reveal.min.js"></script>
+
+	<script>
+		// Required, even if empty.
+		Reveal.initialize({
+      dependencies: [
+        { src: 'plugin/highlight/highlight.js', async: true, callback: function() { hljs.initHighlightingOnLoad(); } },
+        { src: 'plugin/markdown/marked.js', condition: function() { return !!document.querySelector( '[data-markdown]' ); } },
+        { src: 'plugin/markdown/markdown.js', condition: function() { return !!document.querySelector( '[data-markdown]' ); } }
+      ],
+      history: true
+		});
+	</script>
+</body>
+</html>
